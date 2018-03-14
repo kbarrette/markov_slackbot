@@ -40,10 +40,13 @@ class MarkovBot < SlackRubyBot::Bot
   class << self
     def learn_static
       logger.info("Learning static files")
-      Dir.glob(File.join(File.dirname(__FILE__), "static", "*")).each do |file|
-        logger.info("Learning #{file}")
-        markovs[File.basename(file)].parse_string(File.read(file))
+      threads = Dir.glob(File.join(File.dirname(__FILE__), "static", "*")).map do |file|
+        Thread.new do
+          logger.info("Learning #{file}")
+          markovs[File.basename(file)].parse_string(File.read(file))
+        end
       end
+      threads.each(&:join)
       logger.info("Done learning static files")
     end
 
@@ -92,6 +95,7 @@ class MarkovBot < SlackRubyBot::Bot
         @users = response["members"]
           .map { |m| [m["id"], m["name"]] }
           .to_h
+          .tap { |u| logger.info("Users: #{u}") }
       else
         {}
       end
@@ -126,7 +130,7 @@ class MarkovBot < SlackRubyBot::Bot
 end
 
 if __FILE__ == $0
-  learning = Thread.new(&MarkovBot.method(:learn_static))
-  MarkovBot.run
-  learning.join
+  bot = Thread.new(&MarkovBot.method(:run))
+  MarkovBot.learn_static
+  bot.join
 end
