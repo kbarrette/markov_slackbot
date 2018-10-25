@@ -17,6 +17,10 @@ class MarkovBot < SlackRubyBot::Bot
       learn(data.channel, client)
       client.say(text: "Done learning", channel: data.channel)
     end
+    Thread.new do
+      learn_static
+      client.say(text: "Done learning static", channel: data.channel)
+    end
   end
 
   command "forget" do |client, data, match|
@@ -38,53 +42,72 @@ class MarkovBot < SlackRubyBot::Bot
   end
 
   class << self
-    def learn_static
-      logger.info("Learning static files")
-      threads = Dir.glob(File.join(File.dirname(__FILE__), "static", "*")).map do |file|
-        Thread.new do
-          logger.info("Learning #{file}")
-          markovs[File.basename(file)].parse_string(File.read(file))
-        end
-      end
-      threads.each(&:join)
-      logger.info("Done learning static files")
-    end
-
     private
 
     def logger
       @logger ||= Logger.new(STDOUT)
     end
 
+    def learn_static
+      logger.info("Learning static files")
+
+      Dir
+        .glob(File.join(File.dirname(__FILE__), "static", "*"))
+        .map(&method(:learn_static_file))
+        .each(&:join)
+
+      logger.info("Done learning static files")
+    end
+
+    def learn_static_file(file)
+      Thread.new do
+        logger.info("Learning #{file}")
+
+        name = File.basename(file)
+        dictionary = File.join("dictionaries", name)
+
+        markovs[name] = MarkyMarkov::Dictionary.new(dictionary)
+        if !File.exist?("#{dictionary}.mmd")
+          markovs[name].parse_file(file)
+          markovs[name].save_dictionary!
+        end
+
+        logger.info("Done learning #{file}")
+      end
+    end
+
     def learn(channel, client)
       LEARNING.synchronize do
         logger.info("Learning channel #{channel}")
 
+        markovs["us"] ||= MarkyMarkov::TemporaryDictionary.new
         bot_id = SlackRubyBot.config.user_id || client.self.id
         history(channel)
           .select { |m| m["text"] }
           .reject { |m| m["user"] == bot_id }
           .each do |message|
             scrubbed = message["text"].gsub(/<.*?>/, "")
+
             markovs["us"].parse_string(scrubbed)
+
             if user = users[message["user"]]
+              markovs[user] ||= MarkyMarkov::TemporaryDictionary.new
               markovs[user].parse_string(scrubbed)
             end
           end
+
         logger.info("Done learning channel")
       end
     end
 
     def markov_response(user)
       if markovs.has_key?(user)
-        markovs[user].generate_n_sentences(2)
+        markovs[user].generate_n_sentences(Random.rand(3) + 1)
       end
     end
 
     def markovs
-      @markovs ||= Hash.new do |h, k|
-        h[k] = MarkyMarkov::TemporaryDictionary.new
-      end
+      @markovs ||= {}
     end
 
     def users
@@ -130,7 +153,5 @@ class MarkovBot < SlackRubyBot::Bot
 end
 
 if __FILE__ == $0
-  bot = Thread.new(&MarkovBot.method(:run))
-  MarkovBot.learn_static
-  bot.join
+  MarkovBot.run
 end
